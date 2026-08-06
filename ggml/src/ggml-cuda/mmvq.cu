@@ -249,10 +249,18 @@ static constexpr __host__ __device__ int get_mmvq_mmid_max_batch_rdna4(ggml_type
 int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
     // NVIDIA: Volta, Ada Lovelace, and Blackwell always use MMVQ for MUL_MAT_ID.
     if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
-        if (cc == GGML_CUDA_CC_VOLTA || cc >= GGML_CUDA_CC_ADA_LOVELACE) {
+        // This value is an upper bound for ncols_dst and thus for blockDim.y of
+        // mul_mat_vec_q_moe, whose __launch_bounds__ are determined by __CUDA_ARCH__
+        // (see get_mmvq_mmid_max_batch_for_device). If the kernel that actually runs
+        // was compiled/JIT'd from an older arch than the physical one (e.g. PTX for
+        // compute_61 running on a Turing device), the launch bounds of that older
+        // arch apply, so the decision must be based on the compiled arch, not on
+        // the physical one. Otherwise the launch fails with cudaErrorInvalidValue.
+        const int cc_compiled = ggml_cuda_highest_compiled_arch(cc);
+        if (cc_compiled == GGML_CUDA_CC_VOLTA || cc_compiled >= GGML_CUDA_CC_ADA_LOVELACE) {
             return MMVQ_MAX_BATCH_SIZE;
         }
-        if (cc >= GGML_CUDA_CC_TURING) {
+        if (cc_compiled >= GGML_CUDA_CC_TURING) {
             return get_mmvq_mmid_max_batch_turing_plus(type);
         }
         return get_mmvq_mmid_max_batch_pascal_older(type);
