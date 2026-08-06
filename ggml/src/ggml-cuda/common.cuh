@@ -275,9 +275,12 @@ static const char * cu_get_error_str(CUresult err) {
 #define VOLTA_MMA_AVAILABLE
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ == GGML_CUDA_CC_VOLTA
 
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
+// GGML_CUDA_NO_TURING_MMA disables the Turing+ mma kernels at compile time so that the
+// dp4a code paths are used instead. Intended for Turing GPUs without tensor cores, which
+// emulate the mma instructions with a heavy performance penalty.
+#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING && !defined(GGML_CUDA_NO_TURING_MMA)
 #define TURING_MMA_AVAILABLE
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING
+#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_TURING && !defined(GGML_CUDA_NO_TURING_MMA)
 
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #define AMPERE_MMA_AVAILABLE
@@ -346,7 +349,12 @@ static bool volta_mma_available(const int cc) {
 }
 
 static bool turing_mma_available(const int cc) {
+#ifdef GGML_CUDA_NO_TURING_MMA
+    GGML_UNUSED(cc);
+    return false; // must match the device-side TURING_MMA_AVAILABLE macro, which is also disabled
+#else
     return GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_TURING;
+#endif // GGML_CUDA_NO_TURING_MMA
 }
 
 static bool ampere_mma_available(const int cc) {

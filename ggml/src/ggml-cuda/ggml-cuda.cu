@@ -372,7 +372,9 @@ static ggml_cuda_device_info ggml_cuda_init() {
 #endif  // defined(GGML_USE_HIP)
     }
 
-    if (ggml_cuda_highest_compiled_arch(GGML_CUDA_CC_TURING) >= GGML_CUDA_CC_TURING && !turing_devices_without_mma.empty()) {
+    // turing_mma_available() instead of a plain arch check so that the warning is not printed
+    // when the mma kernels were disabled at compile time with GGML_CUDA_NO_TURING_MMA:
+    if (turing_mma_available(GGML_CUDA_CC_TURING) && !turing_devices_without_mma.empty()) {
         GGML_LOG_INFO("The following devices will have suboptimal performance due to a lack of tensor cores:\n");
         for (size_t device_pos = 0; device_pos < turing_devices_without_mma.size(); device_pos++) {
             GGML_LOG_INFO(
