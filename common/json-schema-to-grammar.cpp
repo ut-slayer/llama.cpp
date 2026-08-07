@@ -14,7 +14,29 @@
 
 using json = nlohmann::ordered_json;
 
+// The GBNF parser expands a bounded repetition into one rule per step and
+// refuses past MAX_REPETITION_THRESHOLD (src/llama-grammar.cpp). Emitting a
+// bound above that yields "failed to parse grammar", which names neither the
+// property nor the value. Drop the bound instead: maxLength/maxItems are
+// convenience constraints, and an unbounded rule still accepts every valid
+// instance. Keep this in sync with MAX_REPETITION_THRESHOLD.
+//
+// Only covers the common case: the parser checks the PRODUCT of the pending
+// rules by the new repetition, so a bound under this cap can still overflow
+// when nested deep enough.
+#define GRAMMAR_MAX_REPETITION 2000
+
 static std::string build_repetition(const std::string & item_rule, int min_items, int max_items, const std::string & separator_rule = "") {
+    if (min_items >= GRAMMAR_MAX_REPETITION) {
+        min_items = GRAMMAR_MAX_REPETITION - 1;
+    }
+    if (max_items != std::numeric_limits<int>::max() && max_items >= GRAMMAR_MAX_REPETITION) {
+        max_items = std::numeric_limits<int>::max();
+    }
+    if (max_items < min_items) {
+        max_items = min_items;
+    }
+
     auto has_max = max_items != std::numeric_limits<int>::max();
 
     if (max_items == 0) {
