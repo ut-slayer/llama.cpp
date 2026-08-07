@@ -346,11 +346,19 @@ private:
     }
 
     std::string _visit_pattern(const std::string & pattern, const std::string & name) {
-        if (!(pattern.front() == '^' && pattern.back() == '$')) {
-            _errors.push_back("Pattern must start with '^' and end with '$'");
-            return "";
+        // "pattern" is an unanchored match in JSON Schema, so a missing anchor means
+        // ".*" on that side. Rejecting those was refusing valid schemas: "^ses" is
+        // sent by real clients and is equivalent to "^ses.*$".
+        const bool anchored_start = !pattern.empty() && pattern.front() == '^';
+        const bool anchored_end   = pattern.size() > (anchored_start ? 1u : 0u) && pattern.back() == '$';
+
+        std::string sub_pattern = pattern.substr(anchored_start ? 1 : 0, pattern.size() - (anchored_start ? 1 : 0) - (anchored_end ? 1 : 0));
+        if (!anchored_start) {
+            sub_pattern = ".*" + sub_pattern;
         }
-        std::string sub_pattern = pattern.substr(1, pattern.length() - 2);
+        if (!anchored_end) {
+            sub_pattern += ".*";
+        }
         std::unordered_map<std::string, std::string> sub_rule_ids;
 
         size_t i = 0;
