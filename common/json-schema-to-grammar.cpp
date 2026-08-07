@@ -280,6 +280,8 @@ static std::unordered_map<char, std::string> GRAMMAR_LITERAL_ESCAPES = {
 
 static std::unordered_set<char> NON_LITERAL_SET = {'|', '.', '(', ')', '[', ']', '{', '}', '*', '+', '?'};
 static std::unordered_set<char> ESCAPED_IN_REGEXPS_BUT_NOT_IN_LITERALS = {'^', '$', '.', '[', ']', '(', ')', '|', '{', '}', '*', '+', '?'};
+// escapes the GBNF parser accepts; anything else passed through raw would fail to parse downstream
+static std::unordered_set<char> ESCAPES_SUPPORTED_IN_GBNF = {'x', 'u', 'U', 't', 'r', 'n', '\\', '"', '[', ']'};
 
 static std::string replacePattern(const std::string & input, const std::regex & regex, const std::function<std::string(const std::smatch  &)> & replacement) {
     std::smatch match;
@@ -347,12 +349,21 @@ private:
 
     std::string _visit_pattern(const std::string & pattern, const std::string & name) {
         // "pattern" is an unanchored match in JSON Schema, so a missing anchor means
-        // ".*" on that side. Rejecting those was refusing valid schemas: "^ses" is
-        // sent by real clients and is equivalent to "^ses.*$".
+        // anything may precede/follow. Wrap the body in a non-capturing group before
+        // padding with ".*" so top-level alternation stays contained:
+        // "a|b" -> ".*(?:a|b).*", not ".*a|b.*"
         const bool anchored_start = !pattern.empty() && pattern.front() == '^';
-        const bool anchored_end   = pattern.size() > (anchored_start ? 1u : 0u) && pattern.back() == '$';
+        // a trailing '$' preceded by an odd number of backslashes is an escaped literal, not an anchor
+        size_t trailing_backslashes = 0;
+        for (size_t j = pattern.size(); j > 1 && pattern[j - 2] == '\\'; j--) {
+            trailing_backslashes++;
+        }
+        const bool anchored_end = pattern.size() > (anchored_start ? 1u : 0u) && pattern.back() == '$' && trailing_backslashes % 2 == 0;
 
         std::string sub_pattern = pattern.substr(anchored_start ? 1 : 0, pattern.size() - (anchored_start ? 1 : 0) - (anchored_end ? 1 : 0));
+        if (!(anchored_start && anchored_end) && !sub_pattern.empty()) {
+            sub_pattern = "(?:" + sub_pattern + ")";
+        }
         if (!anchored_start) {
             sub_pattern = ".*" + sub_pattern;
         }
@@ -373,6 +384,11 @@ private:
         std::function<literal_or_rule()> transform = [&]() -> literal_or_rule {
             size_t start = i;
             std::vector<literal_or_rule> seq;
+            bool last_quantified = false;
+
+            auto quantifiable = [&]() {
+                return !seq.empty() && (seq.back().second || seq.back().first != "|");
+            };
 
             auto get_dot = [&]() {
                 std::string rule;
@@ -419,6 +435,8 @@ private:
 
             while (i < length) {
                 char c = sub_pattern[i];
+                const bool prev_quantified = last_quantified;
+                last_quantified = false;
                 if (c == '.') {
                     seq.emplace_back(get_dot(), false);
                     i++;
@@ -456,6 +474,10 @@ private:
                     i++;
                     while (i < length && sub_pattern[i] != ']') {
                         if (sub_pattern[i] == '\\') {
+                            if (i + 1 >= length || ESCAPES_SUPPORTED_IN_GBNF.find(sub_pattern[i + 1]) == ESCAPES_SUPPORTED_IN_GBNF.end()) {
+                                _errors.push_back("Unsupported escape sequence in character class");
+                                return std::make_pair("", false);
+                            }
                             square_brackets += sub_pattern.substr(i, 2);
                             i += 2;
                         } else {
@@ -473,8 +495,23 @@ private:
                     seq.emplace_back("|", false);
                     i++;
                 } else if (c == '*' || c == '+' || c == '?') {
+                    if (!quantifiable()) {
+                        _errors.push_back("Quantifier '" + std::string(1, c) + "' has nothing to repeat");
+                        return std::make_pair("", false);
+                    }
+                    if (prev_quantified) {
+                        if (c != '?') {
+                            _errors.push_back("Quantifier '" + std::string(1, c) + "' applied to a quantifier");
+                            return std::make_pair("", false);
+                        }
+                        // lazy quantifier: same matched language, drop the '?'
+                        i++;
+                        last_quantified = true;
+                        continue;
+                    }
                     seq.back() = std::make_pair(to_rule(seq.back()) + c, false);
                     i++;
+                    last_quantified = true;
                 } else if (c == '{') {
                     std::string curly_brackets = std::string(1, c);
                     i++;
@@ -507,6 +544,10 @@ private:
                         _errors.push_back("Invalid number in curly brackets");
                         return std::make_pair("", false);
                     }
+                    if (!quantifiable()) {
+                        _errors.push_back("Repetition has nothing to repeat");
+                        return std::make_pair("", false);
+                    }
                     auto &last = seq.back();
                     auto &sub = last.first;
                     auto sub_is_literal = last.second;
@@ -525,6 +566,7 @@ private:
                         ""
                     );
                     seq.back().second = false;
+                    last_quantified = true;
                 } else {
                     std::string literal;
                     auto is_non_literal = [&](char c) {
@@ -537,6 +579,9 @@ private:
                                 i++;
                                 literal += sub_pattern[i];
                                 i++;
+                            } else if (ESCAPES_SUPPORTED_IN_GBNF.find(next) == ESCAPES_SUPPORTED_IN_GBNF.end()) {
+                                _errors.push_back("Unsupported escape sequence: \\" + std::string(1, next));
+                                return std::make_pair("", false);
                             } else {
                                 literal += sub_pattern.substr(i, 2);
                                 i += 2;
